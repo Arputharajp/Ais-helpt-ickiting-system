@@ -1,0 +1,568 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// -----------------------------------------
+// Core Multi-Tenancy & Auth (Phase 1)
+// -----------------------------------------
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  domain    String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  roles       Role[]
+  departments Department[]
+  teams       Team[]
+  customers   Customer[]
+  tickets     Ticket[]
+  slas        SlaPolicy[]
+  knowledge   KnowledgeArticle[]
+  mailboxes   Mailbox[]
+  signature   String?  @db.Text
+}
+
+model Role {
+  id             String       @id @default(uuid())
+  name           String
+  permissions    String       @db.Text // JSON string or comma separated (e.g. "ALL", "TICKET_READ", "TICKET_WRITE")
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  isSystem       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  users          User[]
+
+  @@unique([name, organizationId])
+}
+
+model User {
+  id             String       @id @default(uuid())
+  email          String       @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  isActive       Boolean      @default(true)
+  isSuperAdmin   Boolean      @default(false)
+  roleId         String?
+  role           Role?        @relation(fields: [roleId], references: [id])
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  
+  departmentId   String?
+  department     Department?   @relation(fields: [departmentId], references: [id])
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  teamMemberships TeamMember[]
+  assignedTickets Ticket[]
+  messages        TicketMessage[]
+}
+
+// -----------------------------------------
+// Taxonomy (Phase 4, but needed for relations)
+// -----------------------------------------
+
+model Department {
+  id             String       @id @default(uuid())
+  name           String
+  description    String?      @db.Text
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  users          User[]
+  tickets        Ticket[]
+}
+
+model Team {
+  id             String       @id @default(uuid())
+  name           String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  members        TeamMember[]
+  tickets        Ticket[]
+}
+
+model TeamMember {
+  id        String   @id @default(uuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+}
+
+// -----------------------------------------
+// Ticketing (Phase 2 & 3, partial skeleton)
+// -----------------------------------------
+
+model Customer {
+  id             String       @id @default(uuid())
+  email          String
+  passwordHash   String?
+  firstName      String
+  lastName       String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  tickets        Ticket[]
+  messages       TicketMessage[]
+
+  @@unique([email, organizationId])
+}
+
+model Ticket {
+  id             String       @id @default(uuid())
+  subject        String
+  description    String       @db.Text
+  status         String       @default("NEW") // NEW, OPEN, PENDING, ON_HOLD, RESOLVED, CLOSED
+  priority       String       @default("MEDIUM") // LOW, MEDIUM, HIGH, URGENT
+  
+  customerId     String
+  customer       Customer     @relation(fields: [customerId], references: [id])
+  
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  assigneeId     String?
+  assignee       User?        @relation(fields: [assigneeId], references: [id])
+
+  departmentId   String?
+  department     Department?  @relation(fields: [departmentId], references: [id])
+
+  teamId         String?
+  team           Team?        @relation(fields: [teamId], references: [id])
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  firstResponseAt DateTime?
+  resolvedAt     DateTime?
+  dueDate        DateTime?
+  
+  messages       TicketMessage[]
+  emailMessages  EmailMessage[]
+}
+
+model TicketMessage {
+  id             String       @id @default(uuid())
+  content        String       @db.Text
+  isInternal     Boolean      @default(false)
+  
+  ticketId       String
+  ticket         Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  senderType     String       // "USER" or "CUSTOMER" or "SYSTEM"
+  
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id])
+  
+  customerId     String?
+  customer       Customer?    @relation(fields: [customerId], references: [id])
+
+  messageId      String?      // External Email Message-ID
+
+  createdAt      DateTime     @default(now())
+  
+  attachments    TicketAttachment[]
+}
+
+model TicketAttachment {
+  id             String       @id @default(uuid())
+  fileName       String
+  fileType       String
+  fileSize       Int
+  fileUrl        String
+  
+  messageId      String
+  message        TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now())
+}
+
+// -----------------------------------------
+// Mailbox Integration
+// -----------------------------------------
+
+model Mailbox {
+  id                String       @id @default(uuid())
+  email             String
+  encryptedPassword String
+  imapHost          String       @default("imap.gmail.com")
+  imapPort          Int          @default(993)
+  smtpHost          String       @default("smtp.gmail.com")
+  smtpPort          Int          @default(465)
+  
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  
+  isActive          Boolean      @default(true)
+  status            String       @default("NEVER_CONNECTED") // NEVER_CONNECTED, CONNECTED, ERROR, DISABLED
+  
+  lastSyncAt        DateTime?
+  lastSuccessAt     DateTime?
+  lastError         String?      @db.Text
+  
+  emailsProcessed   Int          @default(0)
+  ticketsCreated    Int          @default(0)
+  repliesProcessed  Int          @default(0)
+  
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  emailMessages     EmailMessage[]
+
+  @@unique([organizationId, email])
+}
+
+model EmailMessage {
+  id            String       @id @default(uuid())
+  mailboxId     String
+  mailbox       Mailbox      @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  
+  ticketId      String?
+  ticket        Ticket?      @relation(fields: [ticketId], references: [id])
+  
+  messageId     String       @unique
+  inReplyTo     String?
+  references    String?      @db.Text
+  gmailUid      String?
+  
+  fromEmail     String
+  toEmail       String
+  subject       String
+  body          String       @db.Text
+  
+  receivedAt    DateTime
+  processedAt   DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+}
+
+// -----------------------------------------
+// SLA & Knowledge Base (Phase 3 & 5, placeholders)
+// -----------------------------------------
+
+model SlaPolicy {
+  id                  String       @id @default(uuid())
+  name                String
+  organizationId      String
+  organization        Organization @relation(fields: [organizationId], references: [id])
+  priority            String
+  firstResponseMinutes Int
+  resolutionMinutes   Int
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+}
+
+model KnowledgeArticle {
+  id             String       @id @default(uuid())
+  title          String
+  content        String       @db.Text
+  slug           String
+  isPublished    Boolean      @default(false)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([slug, organizationId])
+}
+
+
+// -----------------------------------------
+// Core Multi-Tenancy & Auth (Phase 1)
+// -----------------------------------------
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  domain    String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  roles       Role[]
+  departments Department[]
+  teams       Team[]
+  customers   Customer[]
+  tickets     Ticket[]
+  slas        SlaPolicy[]
+  knowledge   KnowledgeArticle[]
+  mailboxes   Mailbox[]
+  signature   String?
+}
+
+model Role {
+  id             String       @id @default(uuid())
+  name           String
+  permissions    String       // JSON string or comma separated for simplicity (e.g. "ALL", "TICKET_READ", "TICKET_WRITE")
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  isSystem       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  users          User[]
+
+  @@unique([name, organizationId])
+}
+
+model User {
+  id             String       @id @default(uuid())
+  email          String       @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  isActive       Boolean      @default(true)
+  isSuperAdmin   Boolean      @default(false)
+  roleId         String?
+  role           Role?        @relation(fields: [roleId], references: [id])
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  
+  departmentId   String?
+  department     Department?   @relation(fields: [departmentId], references: [id])
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  teamMemberships TeamMember[]
+  assignedTickets Ticket[]
+  messages        TicketMessage[]
+}
+
+// -----------------------------------------
+// Taxonomy (Phase 4, but needed for relations)
+// -----------------------------------------
+
+model Department {
+  id             String       @id @default(uuid())
+  name           String
+  description    String?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  users          User[]
+  tickets        Ticket[]
+}
+
+model Team {
+  id             String       @id @default(uuid())
+  name           String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  members        TeamMember[]
+  tickets        Ticket[]
+}
+
+model TeamMember {
+  id        String   @id @default(uuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+}
+
+// -----------------------------------------
+// Ticketing (Phase 2 & 3, partial skeleton)
+// -----------------------------------------
+
+model Customer {
+  id             String       @id @default(uuid())
+  email          String
+  passwordHash   String?
+  firstName      String
+  lastName       String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  tickets        Ticket[]
+  messages       TicketMessage[]
+
+  @@unique([email, organizationId])
+}
+
+model Ticket {
+  id             String       @id @default(uuid())
+  subject        String
+  description    String
+  status         String       @default("NEW") // NEW, OPEN, PENDING, ON_HOLD, RESOLVED, CLOSED
+  priority       String       @default("MEDIUM") // LOW, MEDIUM, HIGH, URGENT
+  
+  customerId     String
+  customer       Customer     @relation(fields: [customerId], references: [id])
+  
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  assigneeId     String?
+  assignee       User?        @relation(fields: [assigneeId], references: [id])
+
+  departmentId   String?
+  department     Department?  @relation(fields: [departmentId], references: [id])
+
+  teamId         String?
+  team           Team?        @relation(fields: [teamId], references: [id])
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  firstResponseAt DateTime?
+  resolvedAt     DateTime?
+  dueDate        DateTime?
+  
+  messages       TicketMessage[]
+  emailMessages  EmailMessage[]
+}
+
+model TicketMessage {
+  id             String       @id @default(uuid())
+  content        String
+  isInternal     Boolean      @default(false)
+  
+  ticketId       String
+  ticket         Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  senderType     String       // "USER" or "CUSTOMER" or "SYSTEM"
+  
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id])
+  
+  customerId     String?
+  customer       Customer?    @relation(fields: [customerId], references: [id])
+
+  messageId      String?      // External Email Message-ID
+
+  createdAt      DateTime     @default(now())
+  
+  attachments    TicketAttachment[]
+}
+
+model TicketAttachment {
+  id             String       @id @default(uuid())
+  fileName       String
+  fileType       String
+  fileSize       Int
+  fileUrl        String
+  
+  messageId      String
+  message        TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now())
+}
+
+// -----------------------------------------
+// Mailbox Integration
+// -----------------------------------------
+
+model Mailbox {
+  id                String       @id @default(uuid())
+  email             String
+  encryptedPassword String
+  imapHost          String       @default("imap.gmail.com")
+  imapPort          Int          @default(993)
+  smtpHost          String       @default("smtp.gmail.com")
+  smtpPort          Int          @default(465)
+  
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  
+  isActive          Boolean      @default(true)
+  status            String       @default("NEVER_CONNECTED") // NEVER_CONNECTED, CONNECTED, ERROR, DISABLED
+  
+  lastSyncAt        DateTime?
+  lastSuccessAt     DateTime?
+  lastError         String?
+  
+  emailsProcessed   Int          @default(0)
+  ticketsCreated    Int          @default(0)
+  repliesProcessed  Int          @default(0)
+  
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  emailMessages     EmailMessage[]
+
+  @@unique([organizationId, email])
+}
+
+model EmailMessage {
+  id            String       @id @default(uuid())
+  mailboxId     String
+  mailbox       Mailbox      @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  
+  ticketId      String?
+  ticket        Ticket?      @relation(fields: [ticketId], references: [id])
+  
+  messageId     String       @unique
+  inReplyTo     String?
+  references    String?
+  gmailUid      String?
+  
+  fromEmail     String
+  toEmail       String
+  subject       String
+  body          String
+  
+  receivedAt    DateTime
+  processedAt   DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+}
+
+// -----------------------------------------
+// SLA & Knowledge Base (Phase 3 & 5, placeholders)
+// -----------------------------------------
+
+model SlaPolicy {
+  id                  String       @id @default(uuid())
+  name                String
+  organizationId      String
+  organization        Organization @relation(fields: [organizationId], references: [id])
+  priority            String
+  firstResponseMinutes Int
+  resolutionMinutes   Int
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+}
+
+model KnowledgeArticle {
+  id             String       @id @default(uuid())
+  title          String
+  content        String
+  slug           String
+  isPublished    Boolean      @default(false)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([slug, organizationId])
+}

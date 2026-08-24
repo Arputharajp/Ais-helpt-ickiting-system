@@ -1,0 +1,24 @@
+# Node
+node_modules/
+
+# Environment secrets — never commit these
+.env
+.env.local
+.env.*.local
+
+# SQLite dev databases — use Supabase in production
+*.db
+*.db-journal
+
+# Build output
+dist/
+frontend/dist/
+backend/dist/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
